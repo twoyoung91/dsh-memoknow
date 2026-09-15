@@ -1,5 +1,7 @@
 # MemoKnow for DeepSeek Harness
 
+[English](README.md) | [简体中文](README.zh-CN.md)
+
 MemoKnow is a local DeepSeek Harness plugin for personal memory and
 user-imported knowledge. It stores structured records in SQLite, snapshots
 original documents by SHA-256, combines FTS5 with optional sqlite-vec semantic
