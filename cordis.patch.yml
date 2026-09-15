@@ -1,0 +1,4 @@
+- insert:
+    - id: dsh-memoknow
+      name: '@dsh-external/dsh-memoknow'
+      config: {}

@@ -1,0 +1,74 @@
+{
+  "name": "@dsh-external/dsh-memoknow",
+  "version": "0.2.0",
+  "description": "Local-first personal memory and knowledge management for DeepSeek Harness",
+  "type": "module",
+  "packageManager": "pnpm@11.7.0",
+  "engines": {
+    "node": "^22.19.0 || >=24.0.0",
+    "pnpm": ">=11.7.0 <12"
+  },
+  "main": "lib/index.mjs",
+  "types": "lib/index.d.mts",
+  "exports": {
+    ".": {
+      "types": "./lib/index.d.mts",
+      "default": "./lib/index.mjs"
+    },
+    "./client": "./lib/client.js",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "cordis.patch.yml",
+    "README.md",
+    "docs",
+    "CHANGELOG.md",
+    "CONTRIBUTING.md",
+    "SECURITY.md",
+    "LICENSE"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-runtime",
+        "@deepseek-ai/dsh-client-ui-settings"
+      ]
+    }
+  },
+  "scripts": {
+    "build": "tsdown src/index.ts --format esm --dts --platform node --out-dir lib --clean --deps.never-bundle @deepseek-ai/cordis --deps.never-bundle @deepseek-ai/dsh-tools --deps.never-bundle @deepseek-ai/schemastery && node scripts/copy-static.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "check": "pnpm run typecheck && pnpm run test && pnpm run build && node scripts/check-release.mjs",
+    "prepack": "pnpm run check"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.1",
+    "@deepseek-ai/dsh-tools": "^0.1.2-rc.1 || ^0.1.3-alpha.2",
+    "@deepseek-ai/schemastery": "^3.18.0"
+  },
+  "devDependencies": {
+    "@types/node": "22.20.0",
+    "tsdown": "0.22.2",
+    "typescript": "6.0.3",
+    "vitest": "4.1.11"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "@huggingface/transformers": "3.8.1",
+    "csv-parse": "7.0.2",
+    "exceljs": "4.4.0",
+    "mammoth": "1.12.2",
+    "pdfjs-dist": "6.3.289",
+    "sqlite-vec": "0.1.9",
+    "word-extractor": "1.0.4"
+  }
+}

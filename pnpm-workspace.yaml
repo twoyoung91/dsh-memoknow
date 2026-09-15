@@ -1,0 +1,7 @@
+allowBuilds:
+  onnxruntime-node: true
+  protobufjs: false
+  sharp: false
+overrides:
+  sharp: 0.35.4
+  uuid: 11.1.1
