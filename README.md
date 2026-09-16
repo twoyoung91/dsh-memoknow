@@ -1,4 +1,4 @@
-# MemoKnow for DeepSeek Harness
+![MemoKnow — Local memory and knowledge for DeepSeek Harness](docs/banner.svg)
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 

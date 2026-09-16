@@ -1,4 +1,4 @@
-# MemoKnow：DeepSeek Harness 的记忆与知识插件
+![MemoKnow：DeepSeek Harness 的本地记忆与知识插件](docs/banner.svg)
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
