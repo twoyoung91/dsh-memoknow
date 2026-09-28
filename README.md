@@ -24,6 +24,12 @@ multi-user service or a cloud sync product.
 
 ## A quick look
 
+The management page also includes a memory review inbox, automatic learning
+controls, and knowledge search with extracted-text previews and index repair.
+Normal recall uses only active, non-expired memories. Review inferred suggestions
+in **Memory → Show memories → Review inbox**; pause learning, exclude sessions,
+and adjust token budgets in **Learning**.
+
 These captures show MemoKnow's real management page with synthetic demo
 records. They contain no private chat or imported documents.
 
@@ -161,7 +167,9 @@ an explicit request such as “please remember” bypasses the delay. The model 
 only the pending delta plus a small set of lexically related memories, has no
 tools, is limited to 700 output tokens and a 45-second call, and must return
 validated JSON. Inferred memories enter as `candidate`; explicitly requested
-memories may enter as `active`.
+memories may enter as `active`. Automatic changes to approved memories become
+separate replacement candidates. Dismissal keeps the original; approval replaces
+it only if it has not changed since the proposal was created.
 
 Capture and processing are separate transactions. A restart, timeout, model
 failure, revision conflict, or token-budget refusal leaves captured turns pending
@@ -183,10 +191,12 @@ than a public issue.
 ## Current limitations
 
 - Automatic distillation uses the active DSH session model; there is not yet a
-  separate model or budget control in the MemoKnow settings page.
+  separate model selector. Token budgets are configurable in **Learning**.
 - PDF import does not OCR scanned pages and deliberately ignores images.
 - Local CPU embedding runs on CPU through Transformers.js. Initial download and
   indexing can take time on slower connections or large libraries.
 - Excel `.xls`, password-protected files, macros, and embedded images are not
   imported.
-- The management page uses simple prompt/confirm controls for edits and deletes.
+- Document previews show extracted text with overlapping passages, not the
+  original layout or clickable page-level citations. Deletes use confirmation
+  dialogs; memory edits use a dedicated review form.

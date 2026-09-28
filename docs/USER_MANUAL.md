@@ -129,6 +129,25 @@ a time. You can also tell the agent “please remember ...”; the agent has a
 Use **Search** to find records, **Edit** to update one, and **Forget** to remove
 one permanently from MemoKnow's memory table and FTS index.
 
+Use **Show memories → Review inbox** to review inferred suggestions. Each entry
+shows its origin and, for newly distilled records, the source session and turn
+numbers. Older records may have only a session reference. **Approve** makes a
+suggestion active; **Dismiss** archives it. **Edit** opens a form for content,
+state, and optional expiration. Search and status filters work together, and
+Previous/Next browse the library in pages of 20.
+
+Normal agent recall includes only active, non-expired memories. Candidate,
+disputed, stale, archived, superseded, and expired entries remain accessible
+through the management library. Approval does not clear an expiration date;
+change it in the editor if the memory should be usable again.
+
+An automatic revision to an approved memory creates a **separate replacement
+candidate**. The original remains in recall until approval, which supersedes it
+atomically. Dismissing the proposal leaves the original intact. If the original
+has changed, approval reports a conflict instead of overwriting newer work.
+Review the current original and dismiss the outdated proposal. Forgetting an
+original also removes its pending or archived replacement proposals.
+
 Forget is not archive. Archive retains a record outside normal retrieval;
 Forget removes it and leaves no tombstone. Forget does not erase the original
 DSH chat session, pending captured chat text, external backups, or SQLite pages
@@ -150,6 +169,35 @@ There is currently **no automatic lifecycle task that moves outdated memory
 into tombstones**. Outdated-memory tombstones are a future design goal;
 ranking decay and explicit archive are available now.
 
+### Control automatic learning
+
+Open **Learning** to pause automatic capture and processing, adjust session and
+daily token budgets, and exclude individual session IDs. Save the controls to
+apply them immediately; no restart or embedding validation is needed. The active
+DSH session model is still used for distillation.
+
+- **Pause learning** stops new capture and requests cancellation of in-flight
+  processing. Results returned after cancellation are not applied. A provider
+  may still charge for work already started.
+- Turns overlapping a pause or session-exclusion window are skipped permanently,
+  including when processing resumes after a restart. Only timing metadata and
+  session IDs are stored for these windows, not skipped conversation text.
+- Earlier pending turns stay queued. Resuming an available session or raising its
+  budget can process that backlog; after a restart, its next completed turn makes
+  the session model route available again.
+- A **zero token budget** stops processing but continues queuing eligible turns.
+  Use Pause learning to stop capture as well.
+- **Exclude session** beside a recent session, or enter its ID before chatting.
+  **Resume session** removes the exclusion. Global pause still takes precedence.
+- Explicit agent remember/import tools and existing memory recall remain usable
+  while automatic learning is paused.
+
+The activity panel shows pending turns, per-session reported tokens, the current
+UTC day's usage, and processing errors. Click **Refresh** for new activity.
+Daily budgets reset on the UTC date boundary; session budgets count the session's
+recorded lifetime usage. Token estimates gate new calls; final reported usage can
+vary, and failed calls without a usage report cannot be fully accounted for.
+
 ## Import knowledge
 
 Use **Knowledge → Import snapshot** to paste text/Markdown or choose a file.
@@ -170,6 +218,24 @@ OCR before import. Legacy `.xls`, encrypted/password-protected files, and
 macros are outside this version's scope. Always review extracted text before
 relying on document answers; retrieval returns snippets, not a guarantee of
 complete document comprehension.
+
+### Search, preview, and repair knowledge
+
+Search document contents from the **Knowledge** tab. Results contain only
+knowledge passages, using the selected retrieval mode with keyword fallback.
+Search shows at most 100 passages; narrow the query if that limit is reached.
+**Clear** returns to the paginated document library.
+
+**Preview** opens extracted text in pages of 10 passages. A search result's
+**View passage** opens the page containing that passage and highlights it.
+Passages may overlap and do not reproduce original layout or images. Source
+page/sheet/row labels may appear in the text, but these are not page-level links.
+
+Each document shows its semantic indexing state. If indexing failed, keyword
+search still works. Check the provider in **Setup & settings**, then use
+**Retry indexing** without reimporting the document. Retry is available only
+when an embedding mode is enabled, is bounded to two minutes, and does not alter
+the original snapshot. Failed retries can be attempted again.
 
 ## Storage and backup
 

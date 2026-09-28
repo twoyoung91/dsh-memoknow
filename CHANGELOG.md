@@ -6,6 +6,15 @@ published release.
 
 ## Unreleased
 
+- Memory review inbox with status filters, revision-protected editing, approval,
+  dismissal, and session/turn provenance. Normal recall now includes only active,
+  non-expired memories. Automatic revisions become separate proposals; approval
+  supersedes the unchanged original atomically, while dismissal preserves it.
+- Automatic learning controls: pause capture and processing, exclude individual
+  sessions, adjust session/daily token budgets, and inspect pending work and usage.
+  Persisted pause/exclusion windows prevent skipped turns from being backfilled.
+- Knowledge-only search, paginated extracted-text previews, indexing status and
+  retry actions. Keyword search remains available after semantic indexing failure.
 - Public onboarding README, user manual, contribution guidance, and security
   reporting guidance.
 - Host-managed OpenAI-compatible embedding policy, enforced in the runtime and
