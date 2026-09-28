@@ -9,27 +9,44 @@ MemoKnow 是独立的社区插件，并非 DeepSeek Harness 官方组件。它�
 ## 功能概览
 
 - 从符合条件的已完成聊天轮次中提炼可长期使用的事实、偏好和决定；明确提出“请记住”的请求会更快处理。
-- 在 DSH 的 **Settings → MemoKnow** 中查看、编辑或永久遗忘单条记忆。
-- 将文本/Markdown、Word、PDF、CSV 和 Excel 文档导入为不可变的本地知识快照，并检索其中的文字；忽略文档内嵌图片。
+- 在 DSH 的 **Settings → MemoKnow** 中审核候选记忆，查看来源会话和轮次，编辑、批准或驳回建议。自动生成的修改建议只有获批后才会替换原有记忆。
+- 暂停自动学习、排除指定会话、调整 token 预算，并查看待处理轮次和每日用量。
+- 将文本/Markdown、Word、PDF、CSV 和 Excel 文档导入为不可变的本地知识快照；搜索知识、预览提取文本、查看索引状态或重试语义索引。忽略文档内嵌图片。
+- 编辑或永久遗忘单条记忆；正常召回只包含有效且未过期的记忆。
 - 默认使用 Local FTS，不需要嵌入模型或 API 密钥；可选的本地 CPU 嵌入或 OpenAI 兼容嵌入可改善知识检索。
 
 ## 界面一览
 
-以下截图来自 MemoKnow 的真实管理界面，但使用的是虚构示例记录，不包含私人聊天内容或导入文档。
+以下截图均在 **DSH Settings → MemoKnow** 中拍摄，保留 DSH 设置导航，使用独立配置中的虚构示例记录，不包含私人聊天或文档，也不是独立管理网页的截图。
 
-写入、搜索、编辑或遗忘单条记忆：
+查看候选记忆的来源证据，再决定是否批准：
 
-![包含三条示例记忆和写入表单的 MemoKnow 记忆库](docs/screenshots/memory-library.png)
+![DSH 设置中的 MemoKnow 记忆审核收件箱与示例建议](docs/screenshots/memory-library.png)
 
-导入文档或粘贴 Markdown，再查看可搜索的知识库：
+搜索导入的知识并预览提取文本：
 
-![包含导入表单和两份示例文档快照的 MemoKnow 知识库](docs/screenshots/knowledge-import.png)
+![DSH 设置中的 MemoKnow 知识库与文本预览](docs/screenshots/knowledge-import.png)
+
+暂停学习、设置 token 预算并查看待处理会话：
+
+![DSH 设置中的 MemoKnow 学习控制、用量与待处理示例会话](docs/screenshots/learning-controls.png)
 
 从默认的 Local FTS 开始，按需调整检索设置：
 
-![使用默认 Local FTS 模式的 MemoKnow 检索设置](docs/screenshots/retrieval-settings.png)
+![DSH 设置中的 MemoKnow 检索设置，默认选择 Local FTS](docs/screenshots/retrieval-settings.png)
 
 安装步骤、日常使用、备份和故障排查请参阅[英文用户手册](docs/USER_MANUAL.md)。贡献者请阅读 [CONTRIBUTING.md](CONTRIBUTING.md)；版本变更见 [CHANGELOG.md](CHANGELOG.md)。
+
+## 安装最新版本
+
+从 [GitHub Releases](https://github.com/twoyoung91/dsh-memoknow/releases/latest) 下载 `.tgz` 安装包。MemoKnow v0.2.0 支持 Harness `0.2.0-rc.1` 以及声明兼容的 0.1.x 工具 API 版本。
+
+```powershell
+dsh plugin --profile web add C:\path\to\dsh-external-dsh-memoknow-0.2.0.tgz
+dsh web
+```
+
+如果 DSH 已在运行，请重启后打开 **Settings → MemoKnow**。发布页的 `.tgz` 包含构建后的插件；GitHub 自动生成的源码压缩包仍需按下面的步骤构建。
 
 ## 从源码目录快速安装
 
@@ -105,7 +122,7 @@ models/                         # 仅启用 Local CPU 后创建
 
 每次根 Agent 完成一个轮次后，MemoKnow 只记录新增的用户直接发言和可见的助手文本。它会排除失败的轮次、子 Agent、工具或插件上下文、推理内容、简单应答，以及疑似凭证的内容。这一步在本地完成，不调用模型，并推进每个会话的持久化检查点。
 
-符合条件的轮次使用该 DSH 会话已配置的模型提炼。普通更新按两分钟或五个符合条件的轮次批量处理；“请记住”之类的明确请求会跳过等待。模型只看到待处理的新增内容及少量通过词汇检索找到的相关记忆，不能使用工具；输出上限为 700 token，调用超时为 45 秒，并且必须返回经验证的 JSON。推断得出的记忆以 `candidate` 状态进入；用户明确要求记住的内容可以以 `active` 状态进入。
+符合条件的轮次使用该 DSH 会话已配置的模型提炼。普通更新按两分钟或五个符合条件的轮次批量处理；“请记住”之类的明确请求会跳过等待。模型只看到待处理的新增内容及少量通过词汇检索找到的相关记忆，不能使用工具；输出上限为 700 token，调用超时为 45 秒，并且必须返回经验证的 JSON。推断得出的记忆以 `candidate` 状态进入；用户明确要求记住的内容可以以 `active` 状态进入。对已批准记忆的自动修改会生成独立的替换建议；驳回保留原记录，批准则仅在原记录未被修改时替换它。
 
 捕获和处理分别使用独立事务。重启、超时、模型故障、版本冲突或 token 预算不足时，已捕获的轮次会保留待处理，以便稍后重试。成功处理时，记忆变更、用量统计和检查点推进会原子提交。自动提炼默认每个会话最多使用 8,000 token，每个 UTC 日最多使用 30,000 token。
 

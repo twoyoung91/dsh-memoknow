@@ -15,40 +15,61 @@ multi-user service or a cloud sync product.
 
 - Distills durable facts, preferences, and decisions from eligible completed
   chat turns; explicit “please remember” requests are processed sooner.
-- Lets you inspect, edit, and permanently forget individual memories in the
-  DSH **Settings → MemoKnow** section.
+- Provides a review inbox in DSH **Settings → MemoKnow**: inspect source
+  sessions and turns, edit suggestions, and approve or dismiss them. Approved
+  memories stay intact until you accept a proposed replacement.
+- Lets you pause automatic learning, exclude individual sessions, adjust token
+  budgets, and inspect pending work and daily usage.
 - Imports text/Markdown, Word, PDF, CSV, and Excel documents as immutable local
-  knowledge snapshots with searchable text. Embedded images are ignored.
+  knowledge snapshots with searchable text. Search the knowledge library,
+  preview extracted passages, and inspect or retry semantic indexing.
+  Embedded images are ignored.
+- Lets you edit or permanently forget individual memories. Normal recall
+  includes only active, non-expired records.
 - Starts with Local FTS, so no embedding model or API key is needed. Optional
   CPU or OpenAI-compatible embeddings improve knowledge retrieval.
 
 ## A quick look
 
-The management page also includes a memory review inbox, automatic learning
-controls, and knowledge search with extracted-text previews and index repair.
-Normal recall uses only active, non-expired memories. Review inferred suggestions
-in **Memory → Show memories → Review inbox**; pause learning, exclude sessions,
-and adjust token budgets in **Learning**.
+All screenshots below were captured inside **DSH Settings → MemoKnow**, using
+an isolated profile with fictional demo records. The surrounding DSH settings
+navigation is visible; these are not captures of the standalone management page.
 
-These captures show MemoKnow's real management page with synthetic demo
-records. They contain no private chat or imported documents.
+Review suggested memories and inspect their evidence before approving them:
 
-Write, search, edit, and forget individual memories:
+![DSH Settings showing MemoKnow's memory review inbox and an example suggestion](docs/screenshots/memory-library.png)
 
-![MemoKnow memory library with three example memories and a write form](docs/screenshots/memory-library.png)
+Search imported knowledge and preview its extracted text:
 
-Import a document or paste Markdown, then inspect the searchable library:
+![DSH Settings showing MemoKnow's knowledge library and extracted-text preview](docs/screenshots/knowledge-import.png)
 
-![MemoKnow knowledge import form and two example document snapshots](docs/screenshots/knowledge-import.png)
+Pause learning, set token budgets, and inspect pending sessions:
+
+![DSH Settings showing MemoKnow's learning controls, usage, and pending demo session](docs/screenshots/learning-controls.png)
 
 Start with Local FTS and adjust retrieval settings when needed:
 
-![MemoKnow retrieval setup using the default Local FTS mode](docs/screenshots/retrieval-settings.png)
+![DSH Settings showing MemoKnow retrieval settings with Local FTS selected](docs/screenshots/retrieval-settings.png)
 
 For step-by-step setup, daily use, backups, and troubleshooting, read the
 [user manual](docs/USER_MANUAL.md). Contributors should read
 [CONTRIBUTING.md](CONTRIBUTING.md); release changes are in
 [CHANGELOG.md](CHANGELOG.md).
+
+## Install the latest release
+
+Download the `.tgz` asset from [GitHub Releases](https://github.com/twoyoung91/dsh-memoknow/releases/latest).
+MemoKnow v0.2.0 supports Harness `0.2.0-rc.1` and the declared compatible 0.1.x
+tool API versions. Install the package into your web profile:
+
+```powershell
+dsh plugin --profile web add C:\path\to\dsh-external-dsh-memoknow-0.2.0.tgz
+dsh web
+```
+
+Restart DSH if it is already running, then open **Settings → MemoKnow**.
+The release's `.tgz` includes the built plugin; GitHub's automatic source archives
+require the source-build steps below.
 
 ## Quick start from a checkout
 

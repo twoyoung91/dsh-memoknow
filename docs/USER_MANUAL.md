@@ -3,8 +3,9 @@
 MemoKnow adds personal memory and an imported knowledge library to a local
 DeepSeek Harness (DSH) profile. The plugin keeps its data on the machine running
 DSH. Its management screen appears as **Settings → MemoKnow** in the web UI.
-The [README's visual tour](../README.md#a-quick-look) shows the Memory,
-Knowledge, and Setup views with synthetic demo records.
+The [README's visual tour](../README.md#a-quick-look) shows Memory review,
+Knowledge previews, Learning controls, and Setup inside DSH Settings, using
+fictional demo records.
 
 ## Before you install
 
