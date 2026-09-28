@@ -8,7 +8,7 @@ Knowledge, and Setup views with synthetic demo records.
 
 ## Before you install
 
-- Install a compatible DSH 0.1.x build and confirm its web profile starts.
+- Install a compatible DSH 0.1.x build or DSH `0.2.0-rc.1` and confirm its web profile starts.
 - For a source checkout of MemoKnow, use Node.js `^22.19.0 || >=24.0.0` and
   pnpm 11.7. The `packageManager` field in `package.json` pins the tested pnpm
   version.

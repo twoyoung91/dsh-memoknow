@@ -6,6 +6,7 @@ published release.
 
 ## Unreleased
 
+- Declare compatibility with the DeepSeek Harness `0.2.0-rc.1` tool API.
 - Memory review inbox with status filters, revision-protected editing, approval,
   dismissal, and session/turn provenance. Normal recall now includes only active,
   non-expired memories. Automatic revisions become separate proposals; approval
