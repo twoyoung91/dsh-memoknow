@@ -30,7 +30,7 @@ the examples use `web`.
 
 ### Prebuilt release tarball
 
-Once a GitHub Release provides a `.tgz` asset, download it and run:
+Download the `.tgz` asset from [GitHub Releases](https://github.com/twoyoung91/dsh-memoknow/releases), then run:
 
 ```powershell
 dsh plugin --profile web add C:\path\to\dsh-external-dsh-memoknow-VERSION.tgz

@@ -4,7 +4,9 @@ This project follows versioned GitHub Releases. The package manifest is the
 source of truth for the version of a checkout; in-progress work is not a
 published release.
 
-## Unreleased
+## 0.2.0 — 2026-09-28
+
+First published GitHub Release, including the development baseline below.
 
 - Declare compatibility with the DeepSeek Harness `0.2.0-rc.1` tool API.
 - Memory review inbox with status filters, revision-protected editing, approval,
@@ -19,8 +21,7 @@ published release.
 - Public onboarding README, user manual, contribution guidance, and security
   reporting guidance.
 - Host-managed OpenAI-compatible embedding policy, enforced in the runtime and
-  shown as read-only in the management screen. The package manifest is at
-  `0.2.0`, but this entry is not a published release.
+  shown as read-only in the management screen.
 
 ## 0.1.0 — development baseline (not published)
 
