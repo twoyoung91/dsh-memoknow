@@ -31,9 +31,8 @@ multi-user service or a cloud sync product.
 
 ## A quick look
 
-All screenshots below were captured inside **DSH Settings → MemoKnow**, using
-an isolated profile with fictional demo records. The surrounding DSH settings
-navigation is visible; these are not captures of the standalone management page.
+Open **DSH Settings → MemoKnow** to review memories, explore your knowledge
+library, and control what the plugin learns.
 
 Review suggested memories and inspect their evidence before approving them:
 
