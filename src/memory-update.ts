@@ -159,8 +159,10 @@ export class MemoryUpdateCoordinator {
   private readonly controllers = new Map<string, AbortController>()
   private readonly debounceMs: number
   private readonly batchTurnThreshold: number
-  private readonly maxSessionTokens: number
-  private readonly maxDailyTokens: number
+  private readonly maxSessionTokens: number | undefined
+  private readonly maxDailyTokens: number | undefined
+  private readonly unsubscribeLearning: () => void
+  private drainTail: Promise<void> = Promise.resolve()
   private readonly schedule: (callback: () => void, delayMs: number) => () => void
   private readonly now: () => Date
   private disposed = false
@@ -168,14 +170,24 @@ export class MemoryUpdateCoordinator {
   constructor(private readonly options: MemoryUpdateCoordinatorOptions) {
     this.debounceMs = boundedIntegerOption(options.debounceMs ?? 120_000, 'debounceMs', 0, 3_600_000)
     this.batchTurnThreshold = boundedIntegerOption(options.batchTurnThreshold ?? 5, 'batchTurnThreshold', 1, 100)
-    this.maxSessionTokens = boundedIntegerOption(options.maxSessionTokens ?? 8_000, 'maxSessionTokens', 0, 10_000_000)
-    this.maxDailyTokens = boundedIntegerOption(options.maxDailyTokens ?? 30_000, 'maxDailyTokens', 0, 100_000_000)
+    this.maxSessionTokens = options.maxSessionTokens === undefined ? undefined : boundedIntegerOption(options.maxSessionTokens, 'maxSessionTokens', 0, 10_000_000)
+    this.maxDailyTokens = options.maxDailyTokens === undefined ? undefined : boundedIntegerOption(options.maxDailyTokens, 'maxDailyTokens', 0, 100_000_000)
     this.schedule = options.schedule ?? ((callback, delayMs) => {
       const timer = setTimeout(callback, delayMs)
       timer.unref?.()
       return () => clearTimeout(timer)
     })
     this.now = options.now ?? (() => new Date())
+    this.unsubscribeLearning = options.store.onLearningControlsChanged(() => {
+      for (const sessionId of this.routes.keys()) {
+        if (!options.store.isLearningEnabled(sessionId)) {
+          this.cancelTimer(sessionId)
+          this.controllers.get(sessionId)?.abort(new Error('Automatic learning paused or session excluded'))
+        } else if (options.store.listPendingMemoryTurns(sessionId, 1).length > 0) {
+          void this.enqueueDrain(sessionId)
+        }
+      }
+    })
   }
 
   async onAgentIdle(agent: MemoryUpdateAgent): Promise<void> {
@@ -183,15 +195,23 @@ export class MemoryUpdateCoordinator {
     const sessionId = agent.session.id
     try {
       const snapshot = await this.options.sessionQuery.readSession(sessionId)
+      if (this.disposed) return
       if (snapshot.session.origin === 'subagent' || (snapshot.session.delegationDepth ?? 0) > 0) return
       const state = this.options.store.getMemoryCaptureState(sessionId)
       const afterSeq = state?.capturedThroughSeq ?? Math.max(-1, agent.session.firstLiveSeq - 1)
       const extracted = extractEligibleTurns(snapshot.events, afterSeq)
+      const enabled = this.options.store.isLearningEnabled(sessionId)
+      const eligible = !enabled ? [] : extracted.turns.filter((turn) => {
+        const end = snapshot.events.find((event) => event.seq === turn.endSeq)
+        const start = snapshot.events.find((event) => event.type === 'turn/start' && record(event.data)?.turn === turn.turn)
+        return end !== undefined && !this.options.store.learningWasBlocked(sessionId, start?.time ?? end.time, end.time)
+      })
       if (extracted.capturedThroughSeq >= 0 && extracted.capturedThroughSeq > afterSeq) {
-        this.options.store.captureMemoryTurns(sessionId, extracted.capturedThroughSeq, extracted.turns)
+        this.options.store.captureMemoryTurns(sessionId, extracted.capturedThroughSeq, eligible)
       }
       const route = resolveAgentRoute(agent)
       if (route !== null) this.routes.set(sessionId, route)
+      if (!enabled) return
       const pending = this.options.store.listPendingMemoryTurns(sessionId)
       if (pending.length === 0) return
       if (pending.some((turn) => turn.explicit) || pending.length >= this.batchTurnThreshold) {
@@ -222,6 +242,7 @@ export class MemoryUpdateCoordinator {
   async dispose(): Promise<void> {
     if (this.disposed) return
     this.disposed = true
+    this.unsubscribeLearning()
     for (const cancel of this.timers.values()) cancel()
     this.timers.clear()
     for (const controller of this.controllers.values()) controller.abort(new Error('MemoKnow stopped'))
@@ -246,7 +267,9 @@ export class MemoryUpdateCoordinator {
 
   private enqueueDrain(sessionId: string): Promise<void> {
     const previous = this.jobs.get(sessionId) ?? Promise.resolve()
-    const next = previous.catch(() => undefined).then(async () => this.drain(sessionId))
+    // Serialize model calls across sessions so they cannot spend the same daily budget concurrently.
+    const next = Promise.all([previous.catch(() => undefined), this.drainTail]).then(async () => this.drain(sessionId))
+    this.drainTail = next.catch(() => undefined)
     this.jobs.set(sessionId, next)
     void next.finally(() => {
       if (this.jobs.get(sessionId) === next) this.jobs.delete(sessionId)
@@ -255,7 +278,7 @@ export class MemoryUpdateCoordinator {
   }
 
   private async drain(sessionId: string): Promise<void> {
-    if (this.disposed) return
+    if (this.disposed || !this.options.store.isLearningEnabled(sessionId)) return
     const route = this.routes.get(sessionId)
     if (route === undefined) {
       this.options.store.recordMemoryDistillationFailure(sessionId, new Error('No configured model route is available'))
@@ -265,6 +288,8 @@ export class MemoryUpdateCoordinator {
     this.controllers.set(sessionId, controller)
     try {
       while (!this.disposed) {
+        controller.signal.throwIfAborted()
+        if (!this.options.store.isLearningEnabled(sessionId)) return
         const pending = this.options.store.listPendingMemoryTurns(sessionId, 10)
         if (pending.length === 0) return
         const turns: ExtractedMemoryTurn[] = pending.map((turn) => ({
@@ -279,13 +304,18 @@ export class MemoryUpdateCoordinator {
         const projectedTokens = estimateTokens(DISTILLATION_SYSTEM_PROMPT.length
           + JSON.stringify({ turns, existing }).length) + DISTILLATION_MAX_OUTPUT_TOKENS
         const usage = this.options.store.getMemoryDistillationUsage(sessionId, this.now())
-        if (usage.sessionTokens + projectedTokens > this.maxSessionTokens
-          || usage.dailyTokens + projectedTokens > this.maxDailyTokens) {
+        const controls = this.options.store.getLearningControls().value
+        if (usage.sessionTokens + projectedTokens > (this.maxSessionTokens ?? controls.maxSessionTokens)
+          || usage.dailyTokens + projectedTokens > (this.maxDailyTokens ?? controls.maxDailyTokens)) {
           this.options.store.recordMemoryDistillationFailure(sessionId, new Error('Automatic memory token budget exhausted'))
           return
         }
         const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(45_000)])
         const result = await this.options.distiller.distill({ sessionId, route, turns, existing, signal })
+        if (signal.aborted || !this.options.store.isLearningEnabled(sessionId)) {
+          this.options.store.recordMemoryUsage(sessionId, result.usage, this.now())
+          return
+        }
         this.options.store.completeMemoryDistillation(sessionId, pending.at(-1)!.endSeq,
           result.operations, result.usage, this.now())
       }
@@ -373,6 +403,7 @@ export function parseDistillationOperations(text: string, existing: readonly Dis
     if (operation.action === 'create') {
       return {
         action: 'create',
+        evidenceTurns,
         kind: memoryKind(operation.kind, `operations[${index}].kind`),
         content: memoryContent(operation.content, `operations[${index}].content`),
         status: evidenceTurns.some((turn) => explicitTurns.has(turn)) ? 'active' : 'candidate',
@@ -389,7 +420,7 @@ export function parseDistillationOperations(text: string, existing: readonly Dis
       throw new ValidationError(`operations[${index}] is not an allowed memory revision`)
     }
     const patch: Extract<MemoryDistillationOperation, { action: 'update' }> = {
-      action: 'update', id: allowed.id, expectedRevision: allowed.revision,
+      action: 'update', id: allowed.id, expectedRevision: allowed.revision, evidenceTurns,
     }
     if (operation.kind !== undefined) patch.kind = memoryKind(operation.kind, `operations[${index}].kind`)
     if (operation.content !== undefined) patch.content = memoryContent(operation.content, `operations[${index}].content`)
@@ -401,7 +432,7 @@ export function parseDistillationOperations(text: string, existing: readonly Dis
     }
     if (operation.importance !== undefined) patch.importance = unitNumber(operation.importance, `operations[${index}].importance`)
     if (operation.confidence !== undefined) patch.confidence = unitNumber(operation.confidence, `operations[${index}].confidence`)
-    if (Object.keys(patch).length === 3) throw new ValidationError(`operations[${index}] update has no changes`)
+    if (Object.keys(patch).length === 4) throw new ValidationError(`operations[${index}] update has no changes`)
     return patch
   })
 }

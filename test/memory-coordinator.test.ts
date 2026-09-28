@@ -42,6 +42,89 @@ function agent(id = 'session-1') {
 }
 
 describe('memory update coordinator', () => {
+  it('preserves completed turns when unrelated controls change while the session is read', async () => {
+    const database = store()
+    const coordinator = new MemoryUpdateCoordinator({ store: database,
+      sessionQuery: { async readSession() {
+        const controls = database.getLearningControls()
+        database.updateLearningControls(controls.revision, { ...controls.value, maxDailyTokens: 0, excludedSessionIds: ['other-session'] })
+        return { session: {}, events: events(['Please remember cobalt.']) }
+      } },
+      distiller: { async distill() { throw new Error('Budget is zero') } },
+    })
+    await coordinator.onAgentIdle(agent())
+    expect(database.listPendingMemoryTurns('session-1')).toMatchObject([{ userText: 'Please remember cobalt.' }])
+    await coordinator.dispose()
+    database.close()
+  })
+
+  it('does not backfill turns from a pause window even if no idle event ran during the pause', async () => {
+    const database = store()
+    let controls = database.getLearningControls()
+    controls = database.updateLearningControls(controls.revision, { ...controls.value, paused: true }, new Date(1000))
+    database.updateLearningControls(controls.revision, { ...controls.value, paused: false }, new Date(2000))
+    let calls = 0
+    const coordinator = new MemoryUpdateCoordinator({ store: database,
+      sessionQuery: { async readSession() { return { session: {}, events: events(['Please remember cobalt.']).map(event=>({...event,time:1500+event.seq})) } } },
+      distiller: { async distill() { calls++;return { operations: [], usage: { inputTokens: 1, outputTokens: 1 } } } },
+    })
+    await coordinator.onAgentIdle(agent())
+    expect(database.getMemoryCaptureState('session-1')).toMatchObject({ capturedThroughSeq: 2, pendingTurns: 0 })
+    expect(calls).toBe(0)
+    await coordinator.dispose()
+    database.close()
+  })
+  it('skips paused turns permanently and reads changed budgets without a restart', async () => {
+    const database = store()
+    const texts = ['Please remember my private cobalt preference.']
+    let snapshot = events(texts).map((event) => ({ ...event, time: Date.now() + event.seq }))
+    let calls = 0
+    const coordinator = new MemoryUpdateCoordinator({ store: database,
+      sessionQuery: { async readSession() { return { session: {}, events: snapshot } } },
+      distiller: { async distill() { calls++; return { operations: [], usage: { inputTokens: 1, outputTokens: 1 } } } },
+    })
+    let controls = database.getLearningControls()
+    controls = database.updateLearningControls(controls.revision, { ...controls.value, paused: true })
+    await coordinator.onAgentIdle(agent())
+    expect(database.listPendingMemoryTurns('session-1')).toEqual([])
+    expect(calls).toBe(0)
+    controls = database.updateLearningControls(controls.revision, { ...controls.value, paused: false, maxDailyTokens: 0 })
+    snapshot = events([...texts, 'Please remember my public amber preference.']).map((event) => ({ ...event, time: Date.now() + 100 + event.seq }))
+    await coordinator.onAgentIdle(agent())
+    expect(database.listPendingMemoryTurns('session-1')).toMatchObject([{ turn: 2 }])
+    expect(calls).toBe(0)
+    database.updateLearningControls(controls.revision, { ...controls.value, maxDailyTokens: 30000 })
+    await coordinator.whenIdle('session-1')
+    expect(calls).toBe(1)
+    await coordinator.dispose()
+    database.close()
+  })
+
+  it('discards an in-flight result when a session is excluded', async () => {
+    const database = store()
+    let release!: () => void
+    let started!: () => void
+    const ready = new Promise<void>((resolve) => { started = resolve })
+    const coordinator = new MemoryUpdateCoordinator({ store: database,
+      sessionQuery: { async readSession() { return { session: {}, events: events(['Please remember cobalt.']) } } },
+      distiller: { async distill() {
+        started()
+        await new Promise<void>((resolve) => { release = resolve })
+        return { operations: [{ action: 'create' as const, kind: 'fact' as const, content: 'Cobalt', status: 'active' as const,
+          importance: 1, confidence: 1 }], usage: { inputTokens: 1, outputTokens: 1 } }
+      } },
+    })
+    const work = coordinator.onAgentIdle(agent())
+    await ready
+    const controls = database.getLearningControls()
+    database.updateLearningControls(controls.revision, { ...controls.value, excludedSessionIds: ['session-1'] })
+    release()
+    await work
+    expect(database.listMemories()).toEqual([])
+    expect(database.listPendingMemoryTurns('session-1')).toHaveLength(1)
+    await coordinator.dispose()
+    database.close()
+  })
   it('captures a root-session delta, debounces ordinary turns, and processes a durable batch', async () => {
     const database = store()
     const scheduled: Array<() => void> = []

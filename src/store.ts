@@ -29,6 +29,8 @@ import {
   type RevisionedSettings,
   type SearchHit,
   type SearchOptions,
+  type LearningControls,
+  type RevisionedLearningControls,
 } from './types.js'
 import { boundedNumber, enumValue, optionalString, requireRecord, requireString, ValidationError } from './validation.js'
 
@@ -84,6 +86,8 @@ export class MemoKnowStore {
   private readonly embeddingProviderFactory: EmbeddingProviderFactory | undefined
   private readonly embeddingProviders = new Map<string, EmbeddingProvider>()
   private readonly managedEmbedding: ManagedApiEmbeddingPolicy | undefined
+  private readonly learningListeners = new Set<() => void>()
+  private readonly indexing = new Set<string>()
 
   constructor(rootDir: string, options: {
     embeddingProvider?: EmbeddingProvider
@@ -214,12 +218,21 @@ export class MemoKnowStore {
         PRIMARY KEY (day, session_id)
       );
       CREATE TABLE IF NOT EXISTS schema_meta (version INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS learning_controls (
+        id INTEGER PRIMARY KEY CHECK (id = 1), value_json TEXT NOT NULL, revision INTEGER NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS learning_blocks (
+        session_id TEXT NOT NULL, start_ms INTEGER NOT NULL, end_ms INTEGER
+      );
+      CREATE INDEX IF NOT EXISTS learning_blocks_session ON learning_blocks(session_id, end_ms);
     `)
     this.addColumnIfMissing('knowledge_documents', 'embedding_status', "TEXT NOT NULL DEFAULT 'not_configured'")
     this.addColumnIfMissing('knowledge_documents', 'embedding_error', 'TEXT')
     const meta = this.db.prepare('SELECT version FROM schema_meta LIMIT 1').get() as SqlRow | undefined
-    if (meta === undefined) this.db.prepare('INSERT INTO schema_meta(version) VALUES (?)').run(3)
-    else if (Number(meta.version) < 3) this.db.prepare('UPDATE schema_meta SET version = ?').run(3)
+    if (meta === undefined) this.db.prepare('INSERT INTO schema_meta(version) VALUES (?)').run(4)
+    else if (Number(meta.version) < 4) this.db.prepare('UPDATE schema_meta SET version = ?').run(4)
+    this.db.prepare('INSERT OR IGNORE INTO learning_controls(id, value_json, revision) VALUES (1, ?, 1)')
+      .run(JSON.stringify({ paused: false, excludedSessionIds: [], maxSessionTokens: 8_000, maxDailyTokens: 30_000 }))
     const settings = this.db.prepare('SELECT id FROM settings WHERE id = 1').get()
     if (settings === undefined) {
       this.db.prepare('INSERT INTO settings(id, value_json, revision, updated_at) VALUES (1, ?, 1, ?)')
@@ -269,16 +282,21 @@ export class MemoKnowStore {
     return record
   }
 
-  listMemories(options: { status?: MemoryStatus; limit?: number; offset?: number } = {}): MemoryRecord[] {
+  listMemories(options: { status?: MemoryStatus; query?: string; limit?: number; offset?: number } = {}): MemoryRecord[] {
     const limit = clampInteger(options.limit ?? 100, 1, 500, 'limit')
     const offset = clampInteger(options.offset ?? 0, 0, 1_000_000, 'offset')
+    const conditions: string[] = []
+    const params: string[] = []
     if (options.status !== undefined) {
-      const status = enumValue(options.status, 'status', MEMORY_STATUSES)
-      return (this.db.prepare('SELECT * FROM memories WHERE status = ? ORDER BY updated_at DESC, rowid DESC LIMIT ? OFFSET ?')
-        .all(status, limit, offset) as SqlRow[]).map(mapMemory)
+      conditions.push('status = ?')
+      params.push(enumValue(options.status, 'status', MEMORY_STATUSES))
     }
-    return (this.db.prepare('SELECT * FROM memories ORDER BY updated_at DESC, rowid DESC LIMIT ? OFFSET ?')
-      .all(limit, offset) as SqlRow[]).map(mapMemory)
+    if (options.query?.trim()) {
+      conditions.push('rowid IN (SELECT rowid FROM memory_fts WHERE memory_fts MATCH ?)')
+      params.push(toFtsQuery(options.query))
+    }
+    return (this.db.prepare(`SELECT * FROM memories ${conditions.length ? 'WHERE ' + conditions.join(' AND ') : ''}
+      ORDER BY updated_at DESC, rowid DESC LIMIT ? OFFSET ?`).all(...params, limit, offset) as SqlRow[]).map(mapMemory)
   }
 
   updateMemory(id: string, expectedRevision: number, patch: Partial<Pick<MemoryRecord,
@@ -295,10 +313,29 @@ export class MemoKnowStore {
     const confidence = boundedNumber(patch.confidence, 'confidence', current.confidence)
     const expiresAt = patch.expiresAt === undefined ? current.expiresAt : validateOptionalDate(patch.expiresAt, 'expiresAt')
     const now = new Date().toISOString()
-    const result = this.db.prepare(`UPDATE memories SET kind = ?, content = ?, status = ?, importance = ?, confidence = ?,
-      expires_at = ?, updated_at = ?, revision = revision + 1 WHERE id = ? AND revision = ?`)
-      .run(kind, content, status, importance, confidence, expiresAt, now, id, expectedRevision)
-    if (Number(result.changes) !== 1) throw new ConflictError()
+    const replacement = patch.status === 'active' && current.status !== 'active' ? current.source.replaces : undefined
+    if (replacement) this.db.exec('BEGIN IMMEDIATE')
+    try {
+      if (replacement) {
+        const original = this.getMemory(replacement.id)
+        if (!original || original.revision !== replacement.revision) {
+          throw new ConflictError('The original memory changed. Review it before approving this replacement.')
+        }
+        this.db.prepare("UPDATE memories SET status = 'superseded', updated_at = ?, revision = revision + 1 WHERE id = ? AND revision = ?")
+          .run(now, replacement.id, replacement.revision)
+      }
+      const source = { ...current.source }
+      if (replacement) delete source.replaces
+      const result = this.db.prepare(`UPDATE memories SET kind = ?, content = ?, status = ?, importance = ?, confidence = ?,
+        expires_at = ?, updated_at = ?, last_confirmed_at = ?, source_json = ?, revision = revision + 1 WHERE id = ? AND revision = ?`)
+        .run(kind, content, status, importance, confidence, expiresAt, now,
+          patch.status === 'active' ? now : current.lastConfirmedAt, JSON.stringify(source), id, expectedRevision)
+      if (Number(result.changes) !== 1) throw new ConflictError()
+      if (replacement) this.db.exec('COMMIT')
+    } catch (error) {
+      if (replacement) this.db.exec('ROLLBACK')
+      throw error
+    }
     return this.requireMemory(id)
   }
 
@@ -307,6 +344,7 @@ export class MemoKnowStore {
     if (current.revision !== expectedRevision) throw new ConflictError()
     const result = this.db.prepare('DELETE FROM memories WHERE id = ? AND revision = ?').run(id, expectedRevision)
     if (Number(result.changes) !== 1) throw new ConflictError()
+    this.db.prepare("DELETE FROM memories WHERE status IN ('candidate', 'archived') AND json_extract(source_json, '$.replaces.id') = ?").run(id)
   }
 
   captureMemoryTurns(sessionIdInput: string, capturedThroughSeq: number, turns: Array<{
@@ -405,17 +443,27 @@ export class MemoKnowStore {
           this.createMemory({
             kind: operation.kind, content: operation.content, status: operation.status,
             importance: operation.importance, confidence: operation.confidence,
-            source: { kind: 'session-distilled', sessionId },
+            source: { kind: 'session-distilled', sessionId,
+              ...(operation.evidenceTurns === undefined ? {} : { evidenceTurns: operation.evidenceTurns }) },
           })
           created += 1
         } else if (operation.action === 'update') {
-          this.updateMemory(operation.id, operation.expectedRevision, {
-            ...(operation.kind === undefined ? {} : { kind: operation.kind }),
-            ...(operation.content === undefined ? {} : { content: operation.content }),
-            ...(operation.status === undefined ? {} : { status: operation.status }),
-            ...(operation.importance === undefined ? {} : { importance: operation.importance }),
-            ...(operation.confidence === undefined ? {} : { confidence: operation.confidence }),
-          })
+          const current = this.requireMemory(operation.id)
+          if (current.revision !== operation.expectedRevision) throw new ConflictError()
+          const source = validateMemorySource({ kind: 'session-distilled', sessionId,
+            ...(operation.evidenceTurns === undefined ? {} : { evidenceTurns: operation.evidenceTurns }),
+            replaces: current.status === 'candidate' ? current.source.replaces : { id: current.id, revision: current.revision } })
+          const proposed = {
+            kind: operation.kind ?? current.kind, content: operation.content ?? current.content,
+            status: 'candidate' as const, importance: operation.importance ?? current.importance,
+            confidence: operation.confidence ?? current.confidence, expiresAt: current.expiresAt,
+          }
+          if (current.status === 'candidate') {
+            this.updateMemory(operation.id, operation.expectedRevision, proposed)
+            this.db.prepare('UPDATE memories SET source_json = ? WHERE id = ?').run(JSON.stringify(source), operation.id)
+          } else {
+            this.createMemory({ ...proposed, source })
+          }
           updated += 1
         } else {
           throw new ValidationError('operation.action must be create or update')
@@ -426,17 +474,24 @@ export class MemoKnowStore {
         processed_through_seq = CASE WHEN processed_through_seq > ? THEN processed_through_seq ELSE ? END,
         updated_at = ?, last_error = NULL WHERE session_id = ?`)
         .run(throughSeq, throughSeq, at.toISOString(), sessionId)
-      this.db.prepare(`INSERT INTO memory_distillation_usage(day, session_id, input_tokens, output_tokens, calls)
-        VALUES (?, ?, ?, ?, 1) ON CONFLICT(day, session_id) DO UPDATE SET
-        input_tokens = input_tokens + excluded.input_tokens,
-        output_tokens = output_tokens + excluded.output_tokens,
-        calls = calls + 1`).run(day, sessionId, inputTokens, outputTokens)
+      this.recordMemoryUsage(sessionId, { inputTokens, outputTokens }, at)
       this.db.exec('COMMIT')
     } catch (error) {
       this.db.exec('ROLLBACK')
       throw error
     }
     return { created, updated, skipped }
+  }
+
+  recordMemoryUsage(sessionId: string, usage: MemoryDistillationUsage, at = new Date()): void {
+    const day = at.toISOString().slice(0, 10)
+    const inputTokens = nonNegativeInteger(usage.inputTokens, 'inputTokens')
+    const outputTokens = nonNegativeInteger(usage.outputTokens, 'outputTokens')
+    this.db.prepare(`INSERT INTO memory_distillation_usage(day, session_id, input_tokens, output_tokens, calls)
+        VALUES (?, ?, ?, ?, 1) ON CONFLICT(day, session_id) DO UPDATE SET
+        input_tokens = input_tokens + excluded.input_tokens,
+        output_tokens = output_tokens + excluded.output_tokens,
+        calls = calls + 1`).run(day, sessionId, inputTokens, outputTokens)
   }
 
   getMemoryDistillationUsage(sessionIdInput: string, at = new Date()): { sessionTokens: number; dailyTokens: number } {
@@ -456,18 +511,86 @@ export class MemoKnowStore {
       .run(safeErrorMessage(error), new Date().toISOString(), sessionId)
   }
 
+  getLearningControls(): RevisionedLearningControls {
+    const row = this.db.prepare('SELECT * FROM learning_controls WHERE id = 1').get() as SqlRow
+    return { revision: Number(row.revision), value: JSON.parse(String(row.value_json)) as LearningControls }
+  }
+
+  updateLearningControls(expectedRevision: number, input: unknown, at = new Date()): RevisionedLearningControls {
+    const record = requireRecord(input, 'learning controls')
+    if (!Array.isArray(record.excludedSessionIds) || record.excludedSessionIds.length > 500) {
+      throw new ValidationError('excludedSessionIds must contain at most 500 session IDs')
+    }
+    const value: LearningControls = {
+      paused: requireBoolean(record.paused, 'paused'),
+      excludedSessionIds: [...new Set(record.excludedSessionIds.map((id) => requireString(id, 'sessionId', 500)))],
+      maxSessionTokens: clampInteger(record.maxSessionTokens as number, 0, 10_000_000, 'maxSessionTokens'),
+      maxDailyTokens: clampInteger(record.maxDailyTokens as number, 0, 100_000_000, 'maxDailyTokens'),
+    }
+    const current = this.getLearningControls()
+    if (current.revision !== expectedRevision) throw new ConflictError()
+    const before = new Set([...current.value.excludedSessionIds, ...(current.value.paused ? [''] : [])])
+    const after = new Set([...value.excludedSessionIds, ...(value.paused ? [''] : [])])
+    this.db.exec('BEGIN IMMEDIATE')
+    try {
+      const result = this.db.prepare('UPDATE learning_controls SET value_json = ?, revision = revision + 1 WHERE id = 1 AND revision = ?')
+        .run(JSON.stringify(value), expectedRevision)
+      if (Number(result.changes) !== 1) throw new ConflictError()
+      for (const id of after) if (!before.has(id)) {
+        this.db.prepare('INSERT INTO learning_blocks(session_id, start_ms) VALUES (?, ?)').run(id, at.getTime())
+      }
+      for (const id of before) if (!after.has(id)) {
+        this.db.prepare('UPDATE learning_blocks SET end_ms = ? WHERE session_id = ? AND end_ms IS NULL').run(at.getTime(), id)
+      }
+      this.db.exec('COMMIT')
+    } catch (error) { this.db.exec('ROLLBACK'); throw error }
+    for (const listener of this.learningListeners) listener()
+    return this.getLearningControls()
+  }
+
+  onLearningControlsChanged(listener: () => void): () => void {
+    this.learningListeners.add(listener)
+    return () => { this.learningListeners.delete(listener) }
+  }
+
+  isLearningEnabled(sessionId: string): boolean {
+    const { value } = this.getLearningControls()
+    return !value.paused && !value.excludedSessionIds.includes(sessionId)
+  }
+
+  learningWasBlocked(sessionId: string, startMs: number, endMs: number): boolean {
+    return this.db.prepare(`SELECT 1 FROM learning_blocks WHERE session_id IN ('', ?)
+      AND start_ms <= ? AND (end_ms IS NULL OR end_ms >= ?) LIMIT 1`).get(sessionId, endMs, startMs) !== undefined
+  }
+
+  learningOverview(offset = 0) {
+    const sessions = (this.db.prepare(`SELECT s.*,
+      (SELECT COUNT(*) FROM memory_capture_turns t WHERE t.session_id = s.session_id) AS pending_turns,
+      (SELECT COALESCE(SUM(input_tokens + output_tokens), 0) FROM memory_distillation_usage u WHERE u.session_id = s.session_id) AS tokens
+      FROM memory_capture_state s ORDER BY updated_at DESC, session_id LIMIT 50 OFFSET ?`)
+      .all(clampInteger(offset, 0, 1_000_000, 'offset')) as SqlRow[])
+      .map((row) => ({ ...mapMemoryCaptureState(row), tokens: Number(row.tokens) }))
+    const counts = this.db.prepare(`SELECT (SELECT COUNT(*) FROM memory_capture_state) AS sessions,
+      (SELECT COUNT(*) FROM memory_capture_turns) AS pending`).get() as SqlRow
+    const day = new Date().toISOString().slice(0, 10)
+    const usage = this.db.prepare(`SELECT COALESCE(SUM(input_tokens + output_tokens), 0) AS tokens
+      FROM memory_distillation_usage WHERE day = ?`).get(day) as SqlRow
+    return { controls: this.getLearningControls(), sessions, totalSessions: Number(counts.sessions),
+      pendingTurns: Number(counts.pending), dailyTokens: Number(usage.tokens), day }
+  }
+
   search(query: string, options: SearchOptions = {}): SearchHit[] {
     const match = toFtsQuery(query)
     const settings = this.getSettings().value
     const requestedLimit = options.limit === undefined ? undefined : clampInteger(options.limit, 1, 100, 'limit')
     const memoryLimit = Math.min(settings.maxMemoryResults, requestedLimit ?? settings.maxMemoryResults)
-    const excludedStatuses = options.includeArchived === true ? ['forgotten'] : ['archived', 'superseded', 'forgotten']
-    const placeholders = excludedStatuses.map(() => '?').join(', ')
+    const now = options.now ?? new Date()
+    const lifecycle = options.includeArchived === true ? "m.status != 'forgotten'"
+      : "m.status = 'active' AND (m.expires_at IS NULL OR m.expires_at > ?)"
     const memoryRows = this.db.prepare(`SELECT m.*, bm25(memory_fts) AS text_rank
       FROM memory_fts JOIN memories m ON m.rowid = memory_fts.rowid
-      WHERE memory_fts MATCH ? AND m.status NOT IN (${placeholders}) LIMIT ?`)
-      .all(match, ...excludedStatuses, memoryLimit * 2) as SqlRow[]
-    const now = options.now ?? new Date()
+      WHERE memory_fts MATCH ? AND ${lifecycle} ORDER BY text_rank LIMIT ?`)
+      .all(match, ...(options.includeArchived === true ? [] : [now.toISOString()]), memoryLimit * 2) as SqlRow[]
     const memoryHits: SearchHit[] = memoryRows.map((row) => {
       const memory = mapMemory(row)
       const ageDays = Math.max(0, (now.getTime() - new Date(memory.updatedAt).getTime()) / 86_400_000)
@@ -487,7 +610,7 @@ export class MemoKnowStore {
       domain: 'knowledge', id: String(row.id), documentId: String(row.document_id), title: String(row.title),
       content: String(row.content), ordinal: Number(row.ordinal), score: textScore(row.text_rank),
     }))
-    const combined = [...memoryResults, ...knowledgeHits]
+    const combined = [...memoryResults, ...knowledgeHits].filter((hit) => !options.domain || hit.domain === options.domain)
       .sort((left, right) => right.score - left.score)
     return requestedLimit === undefined ? combined : combined.slice(0, requestedLimit)
   }
@@ -549,6 +672,28 @@ export class MemoKnowStore {
     return this.indexKnowledgeWithProvider(documentId, provider, signal)
   }
 
+  listKnowledgeChunks(documentId: string, limit = 20, offset = 0) {
+    this.requireKnowledge(documentId)
+    return (this.db.prepare('SELECT id, ordinal, content FROM knowledge_chunks WHERE document_id = ? ORDER BY ordinal LIMIT ? OFFSET ?')
+      .all(documentId, clampInteger(limit, 1, 50, 'limit'), clampInteger(offset, 0, 1_000_000, 'offset')) as SqlRow[])
+      .map((row) => ({ id: String(row.id), ordinal: Number(row.ordinal), content: String(row.content) }))
+  }
+
+  async retryKnowledgeIndex(documentId: string, expectedRevision: number, signal?: AbortSignal): Promise<KnowledgeDocument> {
+    const document = this.requireKnowledge(documentId)
+    if (document.revision !== expectedRevision || this.indexing.has(documentId)) throw new ConflictError()
+    if (this.embeddingProvider() === null) throw new ValidationError('Enable an embedding mode before retrying semantic indexing. Keyword search is already available.')
+    this.indexing.add(documentId)
+    this.db.prepare("UPDATE knowledge_documents SET embedding_status = 'pending', embedding_error = NULL WHERE id = ?").run(documentId)
+    try {
+      await this.indexKnowledge(documentId, signal)
+      return this.requireKnowledge(documentId)
+    } catch (error) {
+      if (error instanceof NotFoundError) throw error
+      throw new EmbeddingSetupError('Semantic indexing failed. Keyword search remains available. Check the provider and retry.')
+    } finally { this.indexing.delete(documentId) }
+  }
+
   private async indexKnowledgeWithProvider(documentId: string, provider: EmbeddingProvider, signal?: AbortSignal): Promise<void> {
     this.requireKnowledge(documentId)
     const chunks = this.db.prepare('SELECT rowid, id, content FROM knowledge_chunks WHERE document_id = ? ORDER BY ordinal')
@@ -561,6 +706,8 @@ export class MemoKnowStore {
         if (signal?.aborted === true) throw signal.reason ?? new Error('Embedding cancelled')
         const batch = chunks.slice(offset, offset + 16)
         const vectors = await provider.embed(batch.map((row) => String(row.content)), signal, 'document')
+        signal?.throwIfAborted()
+        this.requireKnowledge(documentId)
         if (vectors.length !== batch.length) throw new Error('Embedding provider returned the wrong vector count')
         if (dimensions === 0) {
           dimensions = vectors[0]?.length ?? 0
@@ -569,7 +716,9 @@ export class MemoKnowStore {
           vectorTable = this.ensureVectorGeneration(generationId, provider, dimensions)
         }
         if (vectors.some((vector) => vector.length !== dimensions)) throw new Error('Embedding dimensions changed during indexing')
-        const insertVector = this.db.prepare(`INSERT OR REPLACE INTO ${vectorTable}(rowid, embedding) VALUES (?, ?)`)
+        // vec0 does not implement SQLite's OR REPLACE conflict behavior.
+        const deleteVector = this.db.prepare(`DELETE FROM ${vectorTable} WHERE rowid = ?`)
+        const insertVector = this.db.prepare(`INSERT INTO ${vectorTable}(rowid, embedding) VALUES (?, ?)`)
         const insertState = this.db.prepare(`INSERT OR REPLACE INTO knowledge_chunk_embeddings
           (chunk_id, generation_id, content_hash, created_at) VALUES (?, ?, ?, ?)`)
         const now = new Date().toISOString()
@@ -579,6 +728,7 @@ export class MemoKnowStore {
             const row = batch[index]!
             const vector = vectors[index]!
             const bytes = new Uint8Array(new Float32Array(vector).buffer)
+            deleteVector.run(BigInt(String(row.rowid)))
             insertVector.run(BigInt(String(row.rowid)), bytes)
             insertState.run(String(row.id), generationId,
               createHash('sha256').update(String(row.content), 'utf8').digest('hex'), now)
@@ -614,7 +764,7 @@ export class MemoKnowStore {
     const limit = options.limit === undefined ? undefined : clampInteger(options.limit, 1, 100, 'limit')
     const keywordHits = this.search(query, options)
     const provider = this.embeddingProvider()
-    if (provider === null) return limit === undefined ? keywordHits : keywordHits.slice(0, limit)
+    if (provider === null || options.domain === 'memory') return limit === undefined ? keywordHits : keywordHits.slice(0, limit)
     try {
       const [queryVector] = await provider.embed([query], signal, 'query')
       if (queryVector === undefined) return limit === undefined ? keywordHits : keywordHits.slice(0, limit)
@@ -886,7 +1036,18 @@ function validateMemorySource(value: unknown): MemorySource {
   const allowed = ['user-stated', 'session-distilled', 'agent-written', 'imported'] as const
   const kind = enumValue(record.kind, 'source.kind', allowed)
   const sessionId = optionalString(record.sessionId, 'source.sessionId', 500)
-  return sessionId === undefined ? { kind } : { kind, sessionId }
+  const evidenceTurns = record.evidenceTurns
+  if (evidenceTurns !== undefined && (!Array.isArray(evidenceTurns) || evidenceTurns.length > 8
+    || evidenceTurns.some((turn) => !Number.isSafeInteger(turn) || turn < 1))) {
+    throw new ValidationError('source.evidenceTurns must contain at most 8 positive turn numbers')
+  }
+  const replacement = record.replaces === undefined ? undefined : requireRecord(record.replaces, 'source.replaces')
+  const replaces = replacement === undefined ? undefined : {
+    id: requireString(replacement.id, 'source.replaces.id', 100),
+    revision: positiveInteger(replacement.revision as number, 'source.replaces.revision'),
+  }
+  return { kind, ...(sessionId === undefined ? {} : { sessionId }), ...(replaces === undefined ? {} : { replaces }),
+    ...(evidenceTurns === undefined ? {} : { evidenceTurns: evidenceTurns as number[] }) }
 }
 
 function validateKnowledgeSource(value: unknown): KnowledgeSource {

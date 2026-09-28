@@ -16,6 +16,8 @@ export interface ManagedApiEmbeddingPolicy {
 export interface MemorySource {
   kind: 'user-stated' | 'session-distilled' | 'agent-written' | 'imported'
   sessionId?: string
+  evidenceTurns?: number[]
+  replaces?: { id: string; revision: number }
 }
 
 export interface MemoryRecord {
@@ -101,6 +103,7 @@ export type MemoryDistillationOperation =
       status: 'candidate' | 'active'
       importance: number
       confidence: number
+      evidenceTurns?: number[]
     }
   | {
       action: 'update'
@@ -111,6 +114,7 @@ export type MemoryDistillationOperation =
       status?: MemoryStatus
       importance?: number
       confidence?: number
+      evidenceTurns?: number[]
     }
 
 export interface MemoryDistillationUsage {
@@ -119,9 +123,22 @@ export interface MemoryDistillationUsage {
 }
 
 export interface SearchOptions {
+  domain?: 'memory' | 'knowledge'
   limit?: number
   includeArchived?: boolean
   now?: Date
+}
+
+export interface LearningControls {
+  paused: boolean
+  excludedSessionIds: string[]
+  maxSessionTokens: number
+  maxDailyTokens: number
+}
+
+export interface RevisionedLearningControls {
+  revision: number
+  value: LearningControls
 }
 
 export type SearchHit =

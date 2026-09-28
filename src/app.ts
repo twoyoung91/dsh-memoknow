@@ -1,7 +1,7 @@
 import { ConflictError, EmbeddingSetupError, MemoKnowStore, NotFoundError } from './store.js'
 import { extractDocument, mediaTypeForFileName } from './document-extraction.js'
 import type { KnowledgeSource, MemoryKind, MemorySource, MemoryStatus } from './types.js'
-import { requireRecord, ValidationError } from './validation.js'
+import { enumValue, requireRecord, ValidationError } from './validation.js'
 
 const API_PREFIX = '/_dsh/memoknow/api'
 const MAX_JSON_BYTES = 1024 * 1024
@@ -21,15 +21,25 @@ export class MemoKnowApp {
       }
       if (path === '/search' && request.method === 'GET') {
         const limit = parseInteger(url.searchParams.get('limit'), undefined)
+        const domain = url.searchParams.get('domain')
         return success(await this.store.searchHybrid(url.searchParams.get('q') ?? '', {
+          ...(domain === null ? {} : { domain: enumValue(domain, 'domain', ['memory', 'knowledge'] as const) }),
           ...(limit === undefined ? {} : { limit }), includeArchived: url.searchParams.get('includeArchived') === 'true',
         }))
+      }
+      if (path === '/learning' && request.method === 'GET') {
+        return success(this.store.learningOverview(parseInteger(url.searchParams.get('offset'), 0)))
+      }
+      if (path === '/learning' && request.method === 'PATCH') {
+        const body = await readJson(request)
+        return success(this.store.updateLearningControls(requireRevision(body.expectedRevision), body.value))
       }
       if (path === '/memories' && request.method === 'GET') {
         const status = url.searchParams.get('status') ?? undefined
         const limit = parseInteger(url.searchParams.get('limit'), 100)
         const offset = parseInteger(url.searchParams.get('offset'), 0)
         return success(this.store.listMemories({
+          query: url.searchParams.get('q') ?? '',
           ...(status === undefined ? {} : { status: status as MemoryStatus }),
           ...(limit === undefined ? {} : { limit }), ...(offset === undefined ? {} : { offset }),
         }))
@@ -101,6 +111,17 @@ export class MemoKnowApp {
         })
         await indexWithoutLosingImport(this.store, document.id)
         return success(this.store.getKnowledge(document.id), 201)
+      }
+      const chunksMatch = path.match(/^\/knowledge\/([0-9a-f-]+)\/chunks$/i)
+      if (chunksMatch !== null && request.method === 'GET') {
+        return success(this.store.listKnowledgeChunks(chunksMatch[1]!, parseInteger(url.searchParams.get('limit'), 20),
+          parseInteger(url.searchParams.get('offset'), 0)))
+      }
+      const reindexMatch = path.match(/^\/knowledge\/([0-9a-f-]+)\/reindex$/i)
+      if (reindexMatch !== null && request.method === 'POST') {
+        const body = await readJson(request)
+        return success(await this.store.retryKnowledgeIndex(reindexMatch[1]!, requireRevision(body.expectedRevision),
+          AbortSignal.any([request.signal, AbortSignal.timeout(120_000)])))
       }
       const knowledgeMatch = path.match(/^\/knowledge\/([0-9a-f-]+)$/i)
       if (knowledgeMatch !== null && request.method === 'GET') {
